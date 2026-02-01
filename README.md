@@ -7,9 +7,10 @@ This is the official implementation of **LoopViT**, a recursive vision transform
 
 ### [Paper] | [Project Page]
 
-**Wen-Jie Shu$^{1,*}$ \quad Xuerui Qiu$^2$ \quad Rui-Jie Zhu$^3$ \quad Harold Haodong Chen$^1$ \quad Yexin Liu$^1$ \quad Harry Yang$^1$**
-$^1$HKUST \quad $^2$CASIA \quad $^3$UC Santa Cruz
-$^*$Email: wenjieshu2003@gmail.com
+**Wen-Jie Shu<sup>1,*</sup>, Xuerui Qiu<sup>2</sup>, Rui-Jie Zhu<sup>3</sup>, Harold Haodong Chen<sup>1</sup>, Yexin Liu<sup>1</sup>, Harry Yang<sup>1</sup>**
+
+<sup>1</sup>HKUST &nbsp;&nbsp; <sup>2</sup>CASIA &nbsp;&nbsp; <sup>3</sup>UC Santa Cruz  
+<sup>*</sup>Email: wenjieshu2003@gmail.com
 
 ---
 
