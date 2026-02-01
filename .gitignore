@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.log
+checkpoint/
+checkpoints/
+*.pth
+*.pt
+raw_data/
+wandb/
+.env
