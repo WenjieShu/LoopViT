@@ -14,15 +14,18 @@ This is the official implementation of **LoopViT**, a recursive vision transform
 
 ---
 
-## 🚀 Overview
+## 🚀 Overview: Rethinking ARC as a Looped Process
 
-Recent advances in visual reasoning have demonstrated that Vision Transformers can solve abstract grid-to-grid tasks (ARC) without symbolic engines. However, the prevailing feed-forward paradigm—where reasoning depth is bound to parameter count—is structurally mismatched with the induction of algorithms.
+Conventional Vision Transformers (ViTs) follow a **feed-forward paradigm**, where reasoning depth is strictly bound to the parameter count. However, abstract reasoning (ARC) is rarely a single-pass perceptual decision; it resembles an **iterative latent deliberation** where an internal state is repeatedly refined.
 
-**LoopViT** addresses this by introducing a recursive architecture that decouples computational depth from model capacity:
+**Loop-ViT** establishes a new paradigm for visual reasoning by decoupling computational depth from model capacity:
 
-- **Recursive Reasoning**: Iteratively processes a weight-tied *Hybrid Block* (Convolutions + Global Attention) to form a **latent chain of thought**.
-- **Dynamic Exit**: A parameter-free mechanism based on **predictive entropy**. The model halts inference automatically when its internal state "crystallizes" into a low-uncertainty attractor.
-- **Efficiency**: With only **11.2M parameters**, LoopViT achieves **62.2% accuracy** on ARC-AGI-1, outperforming massive 73M-parameter ensembles.
+- **Looped Vision Transformer**: We propose the first looped ViT architecture, establishing iterative recurrence as a powerful paradigm for abstract visual reasoning—demonstrating that **pure visual representations** are sufficient for ARC without needing linguistic or symbolic priors.
+- **Scaling Time over Space**: Instead of solely relying on raw capacity ("Space"), Loop-ViT allows models to adapt computational effort ("Time") via a weight-tied **Hybrid Block** (Convolutions + Global Attention). This design aligns with the local, cellular-update nature of ARC transformations.
+- **Predictive Crystallization (Dynamic Exit)**: We introduce a parameter-free mechanism where predictions "crystallize" (predictive entropy decays) over iterations. Loop-ViT halts early on easier tasks, significantly improving the accuracy-FLOPs Pareto frontier.
+- **Empirical Superiority**: 
+    - **Loop-ViT (Small, 3.8M)** achieves **60.1%** on ARC-AGI-1, surpassing the 18M VARC baseline (**54.5%**) with 1/5 the parameters.
+    - **Loop-ViT (Large, 18M)** reaches **65.8%**, outperforming massive ensembles of feed-forward experts.
 
 ---
 
