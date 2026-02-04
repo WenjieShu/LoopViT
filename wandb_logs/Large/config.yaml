@@ -1,0 +1,252 @@
+_wandb:
+    value:
+        cli_version: 0.22.0
+        e:
+            06mogi4n1k9k1gdwuwoz090ekn68d0a4:
+                args:
+                    - --architecture
+                    - loop_vit1
+                    - --epochs
+                    - "100"
+                    - --loop-core-depth
+                    - "10"
+                    - --max-loop-steps
+                    - "6"
+                    - --min-loop-steps
+                    - "6"
+                    - --batch-size
+                    - "32"
+                    - --image-size
+                    - "64"
+                    - --patch-size
+                    - "2"
+                    - --learning-rate
+                    - "2.5e-4"
+                    - --weight-decay
+                    - "0"
+                    - --embed-dim
+                    - "512"
+                    - --num-heads
+                    - "8"
+                    - --include-rearc
+                    - --num-colors
+                    - "12"
+                    - --data-root
+                    - raw_data/ARC-AGI
+                    - --train-split
+                    - training
+                    - --wandb-project
+                    - Loopvit1
+                    - --wandb-run-name
+                    - ViT1_Block10_Loop6_2_5_vit1
+                    - --save-path
+                    - saves/ARC_LoopViT1/block10_loop6_2_5_vit1/checkpoint_final.pt
+                    - --best-save-path
+                    - saves/ARC_LoopViT1/block10_loop6_2_5_vit1/checkpoint_best.pt
+                    - --lr-scheduler
+                    - cosine
+                    - --vis-every
+                    - "50"
+                    - --distributed
+                    - --use-wandb
+                    - --gate-entropy-weight
+                    - "5e-4"
+                    - --loop-penalty-weight
+                    - "1e-3"
+                    - --max-grad-norm
+                    - "1"
+                    - --train-dynamic-exit
+                    - --eval-dynamic-exit
+                    - --no-compile
+                codePath: offline_train_loop_ARC.py
+                codePathLocal: offline_train_loop_ARC.py
+                cpu_count: 120
+                cpu_count_logical: 240
+                cudaVersion: "12.6"
+                disk:
+                    /:
+                        total: "930334486528"
+                        used: "26026147840"
+                email: wenjieshu2003@gmail.com
+                executable: /nfs/wenjie/miniconda3/envs/visarc/bin/python3.10
+                git:
+                    remote: https://github.com/WenjieShu/VARC.git
+                gpu: NVIDIA H200
+                gpu_count: 8
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-a95c05df-1136-0c7a-289c-a113169804bf
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-81dddedf-a3f6-a5b4-b402-9afe694660e3
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-c8830817-5c51-76a2-fca0-ac9323e152d1
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-d99ec13b-30a9-e32c-1ef0-5b8670ce258a
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-6bf9411c-49b6-d985-c5e8-757c53e19acc
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-66f43c08-484e-df93-4824-91575fd27ad7
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-cbcf6f52-9e1b-fdf3-b858-bf2f27cd617a
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-725aeb7a-b623-88fd-270a-732b61346f8b
+                host: bm-91035kf
+                memory:
+                    total: "2164010758144"
+                os: Linux-5.15.0-97-generic-x86_64-with-glibc2.35
+                program: /nfs/wenjie/VARC_v1/offline_train_loop_ARC.py
+                python: CPython 3.10.0
+                root: /nfs/wenjie/VARC_v1
+                startedAt: "2026-01-13T04:11:51.762172Z"
+                writerId: 06mogi4n1k9k1gdwuwoz090ekn68d0a4
+        m: []
+        python_version: 3.10.0
+        t:
+            "1":
+                - 1
+                - 41
+                - 49
+                - 63
+                - 83
+            "2":
+                - 1
+                - 41
+                - 49
+                - 63
+                - 83
+            "3":
+                - 1
+                - 2
+                - 13
+                - 16
+                - 61
+            "4": 3.10.0
+            "5": 0.22.0
+            "12": 0.22.0
+            "13": linux-x86_64
+architecture:
+    value: loop_vit1
+batch_size:
+    value: 32
+best_save_path:
+    value: saves/ARC_LoopViT1/block10_loop6_2_5_vit1/checkpoint_best.pt
+compile_mode:
+    value: reduce-overhead
+data_root:
+    value: raw_data/ARC-AGI
+disable_exit_gate:
+    value: false
+disable_resolution_augmentation:
+    value: false
+disable_translation:
+    value: false
+distributed:
+    value: true
+dropout:
+    value: 0.1
+embed_dim:
+    value: 512
+epochs:
+    value: 100
+eval_dynamic_exit:
+    value: true
+eval_split:
+    value: training
+eval_subset:
+    value: test
+exit_gate_threshold:
+    value: 0.6
+fix_scale_factor:
+    value: 2
+gate_entropy_weight:
+    value: 0.0005
+image_size:
+    value: 64
+include_rearc:
+    value: true
+learning_rate:
+    value: 0.00025
+loop_core_depth:
+    value: 10
+loop_penalty_weight:
+    value: 0.001
+lr_scheduler:
+    value: cosine
+max_grad_norm:
+    value: 1
+max_loop_steps:
+    value: 6
+min_loop_steps:
+    value: 6
+mlp_dim:
+    value: 512
+no_amp:
+    value: false
+no_compile:
+    value: true
+no_step_embedding:
+    value: false
+num_colors:
+    value: 12
+num_heads:
+    value: 8
+num_task_tokens:
+    value: 1
+num_workers:
+    value: 4
+patch_size:
+    value: 2
+rearc_limit:
+    value: -1
+rearc_path:
+    value: raw_data/re_arc
+resume_checkpoint:
+    value: null
+resume_reset_epoch:
+    value: false
+resume_reset_optimizer:
+    value: false
+resume_skip_task_token:
+    value: false
+save_path:
+    value: saves/ARC_LoopViT1/block10_loop6_2_5_vit1/checkpoint_final.pt
+seed:
+    value: 42
+train_dynamic_exit:
+    value: true
+train_split:
+    value: training
+use_wandb:
+    value: true
+vis_every:
+    value: 50
+wandb_project:
+    value: Loopvit1
+wandb_run_name:
+    value: ViT1_Block10_Loop6_2_5_vit1
+weight_decay:
+    value: 0
