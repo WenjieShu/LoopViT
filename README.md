@@ -49,15 +49,6 @@ Conventional Vision Transformers (ViTs) follow a **feed-forward paradigm**, wher
 ### Data Preparation
 The model expects the ARC-AGI dataset. Please refer to the `raw_data` section in the [VARC repository](https://github.com/kyegomez/VARC) for detailed data processing instructions.
 By default, place the data in `raw_data/ARC-AGI`.
-The directory structure should be:
-```
-raw_data/
-  ARC-AGI/
-    data/
-      training/
-      evaluation/
-      test/
-```
 
 ### Training (Offline)
 We provide a shell script to replicate our main experimental setup:
