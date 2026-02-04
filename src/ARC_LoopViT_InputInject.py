@@ -7,13 +7,8 @@ import torch
 from torch import nn
 from timm.models.vision_transformer import PatchEmbed
 
-# Imports for Hooked Layers
-from src.attn_hook import (
-    ARCTransformerEncoderLayerWithAttn as HookLayerV0,
-    ARCTransformerEncoderLayerWithAttn_v1 as HookLayerV1
-)
-
-from src.ARC_ViT1 import ARCTransformerEncoderLayer as DefaultLayer
+# Default 
+from src.ARC_ViT import ARCTransformerEncoderLayer as DefaultLayer
 
 
 @dataclass
@@ -26,7 +21,7 @@ class LoopForwardMetadata:
 
 
 class LoopARCViT(nn.Module):
-    """Vision Transformer with shared looped blocks and optional exit gate."""
+    """Vision Transformer with shared looped blocks, optional exit gate, AND Input Injection."""
 
     def __init__(
         self,
@@ -83,23 +78,8 @@ class LoopARCViT(nn.Module):
 
         total_seq_len = self.num_task_tokens + self.seq_length
         
-        # Dynamic Layer Swapping for Visualization
-        target_cls = layer_class if layer_class is not None else DefaultLayer
+        LayerClass = layer_class if layer_class is not None else DefaultLayer
         
-        # Check module source to decide which Hook to use
-        # If HookLayerV1 matches logic of target_cls (ViT1)
-        if HookLayerV1 is not None and "ViT1" in target_cls.__module__:
-            LayerClass = HookLayerV1
-            print(f"[LoopARCViT_Vis] Detected ViT1 layer from {target_cls.__module__}. Swapping to {LayerClass.__name__}.")
-        elif HookLayerV0 is not None and ("ARC_ViT" in target_cls.__module__ and "ViT1" not in target_cls.__module__):
-             # Standard ViT
-            LayerClass = HookLayerV0
-            print(f"[LoopARCViT_Vis] Detected Standard ViT layer from {target_cls.__module__}. Swapping to {LayerClass.__name__}.")
-        else:
-            # Fallback (maybe ViT2 or custom)
-            LayerClass = target_cls
-            print(f"[LoopARCViT_Vis] Using provided layer {LayerClass.__name__} from {target_cls.__module__} (No Hook available or Mismatch).")
-
         layers = []
         for _ in range(loop_core_depth):
             try:
@@ -216,27 +196,6 @@ class LoopARCViT(nn.Module):
         )
         return pad_mask
 
-    def _project_to_logits(self, hidden_states: torch.Tensor, batch_size: int) -> torch.Tensor:
-        """Helper to project hidden states to pixel logits."""
-        # hidden_states: (B, L, D)
-        final_states = self.norm(hidden_states)
-        pixel_states = final_states[:, self.num_task_tokens :, :]
-        logits = self.head(pixel_states)
-        logits = logits.reshape(
-            (
-                -1,
-                self.image_size // (self.patch_size or 1),
-                self.image_size // (self.patch_size or 1),
-                (self.patch_size or 1),
-                (self.patch_size or 1),
-                self.num_colors,
-            )
-        )
-        logits = logits.permute((0, 1, 3, 2, 4, 5))
-        logits = logits.reshape(batch_size, self.image_size, self.image_size, self.num_colors)
-        logits = logits.permute(0, 3, 1, 2)
-        return logits
-
     def forward(
         self,
         pixel_values: torch.Tensor,
@@ -245,60 +204,35 @@ class LoopARCViT(nn.Module):
         *,
         dynamic_exit: Optional[bool] = None,
         gate_threshold: Optional[float] = None,
-        override_max_steps: Optional[int] = None,
-        return_intermediates: bool = False,
-        return_attn: bool = False,
-    ) -> Tuple[torch.Tensor, LoopForwardMetadata, List[torch.Tensor], Optional[List[List[Any]]]] | Tuple[torch.Tensor, LoopForwardMetadata]:
+    ) -> Tuple[torch.Tensor, LoopForwardMetadata]:
         hidden_states, batch_size = self._encode_inputs(pixel_values, task_ids)
         device = hidden_states.device
         key_padding_mask = self._prepare_attention_mask(attention_mask, batch_size, device)
 
         use_dynamic_exit = bool(dynamic_exit) and self.use_exit_gate
         threshold = gate_threshold if gate_threshold is not None else self.default_gate_threshold
-        
-        current_max = override_max_steps if override_max_steps is not None else self.max_loop_steps
-        
         running_hidden = hidden_states
         if use_dynamic_exit:
             finished_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
             cached_final = torch.zeros_like(running_hidden)
-            exit_steps = torch.full((batch_size,), current_max, dtype=torch.long, device=device)
+            exit_steps = torch.full((batch_size,), self.max_loop_steps, dtype=torch.long, device=device)
         else:
             cached_final = None
-            exit_steps = torch.full((batch_size,), current_max, dtype=torch.long, device=device)
+            exit_steps = torch.full((batch_size,), self.max_loop_steps, dtype=torch.long, device=device)
 
         gate_probs: List[torch.Tensor] = []
-        
-        intermediate_logits_list: List[torch.Tensor] = []
-        # Collect hidden states
-        intermediate_hidden_list: List[torch.Tensor] = []
-        
-        all_steps_attn_data: Optional[List[List[Any]]] = [] if return_attn else None
 
-        for step in range(current_max):
+        for step in range(self.max_loop_steps):
+            # [NEW] Input Injection
+            # Iterate: h_t = Layer(h_{t-1}) + h_0
+            # Note: We add it to running_hidden
+            running_hidden = running_hidden + hidden_states
+
             if self.step_embed is not None:
-                embed_step = min(step, self.step_embed.num_embeddings - 1)
-                running_hidden = running_hidden + self.step_embed.weight[embed_step].view(1, 1, -1)
+                running_hidden = running_hidden + self.step_embed.weight[step].view(1, 1, -1)
 
-            step_layer_attn = []
             for layer in self.core_layers:
-                if return_attn and hasattr(layer, 'forward'):
-                    try:
-                        running_hidden, scores, attn = layer(running_hidden, key_padding_mask=key_padding_mask, return_attn=True)
-                        step_layer_attn.append({"scores": scores.detach().cpu(), "attn": attn.detach().cpu()})
-                    except TypeError:
-                         running_hidden = layer(running_hidden, key_padding_mask=key_padding_mask)
-                else:
-                    running_hidden = layer(running_hidden, key_padding_mask=key_padding_mask)
-
-            if return_attn:
-                all_steps_attn_data.append(step_layer_attn)
-
-            if return_intermediates:
-                step_logits = self._project_to_logits(running_hidden, batch_size)
-                intermediate_logits_list.append(step_logits)
-                # Store hidden states for PCA/Analysis
-                intermediate_hidden_list.append(running_hidden.detach().cpu())
+                running_hidden = layer(running_hidden, key_padding_mask=key_padding_mask)
 
             if self.use_exit_gate:
                 gate_logit = self.exit_gate(running_hidden[:, 0, :]).squeeze(-1)
@@ -327,11 +261,22 @@ class LoopARCViT(nn.Module):
             cached_final,
             running_hidden,
         )
-        logits = self._project_to_logits(final_states, batch_size)
+        final_states = self.norm(final_states)
+        pixel_states = final_states[:, self.num_task_tokens :, :]
+        logits = self.head(pixel_states)
+        logits = logits.reshape(
+            (
+                -1,
+                self.image_size // (self.patch_size or 1),
+                self.image_size // (self.patch_size or 1),
+                (self.patch_size or 1),
+                (self.patch_size or 1),
+                self.num_colors,
+            )
+        )
+        logits = logits.permute((0, 1, 3, 2, 4, 5))
+        logits = logits.reshape(pixel_values.size(0), self.image_size, self.image_size, self.num_colors)
+        logits = logits.permute(0, 3, 1, 2)
 
-        metadata = LoopForwardMetadata(gate_probs=gate_probs, exit_steps=exit_steps, max_steps=current_max)
-        
-        if return_intermediates:
-            return logits, metadata, intermediate_logits_list, all_steps_attn_data, intermediate_hidden_list
-        
+        metadata = LoopForwardMetadata(gate_probs=gate_probs, exit_steps=exit_steps, max_steps=self.max_loop_steps)
         return logits, metadata
