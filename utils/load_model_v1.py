@@ -1,18 +1,9 @@
+import os
 from typing import Any, Dict, Optional
 import torch
-import torch.nn.functional as F
-import math
-import os
-
-from src.ARC_ViT import ARCTransformerEncoderLayer as DefaultLayer
 from src.ARC_ViT import ARCViT  
 from src.ARC_LoopViT import LoopARCViT
 from src.ARC_UNet import ARCUNet
-
-# [NEW] 导入新的模型和层
-from src.ARC_ViT1 import ARCViT1, ARCTransformerEncoderLayer as Layer1
-from src.ARC_ViT2 import ARCViT2, ARCTransformerEncoderLayer as Layer2
-
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.amp import GradScaler
 from utils.lr_scheduler import get_cosine_schedule_with_warmup
@@ -21,11 +12,11 @@ def count_parameters(model):
     ret = 0
     for name, p in model.named_parameters():
         if p.requires_grad and 'task_token' not in name:
+            #print(name, p.numel())
             ret += p.numel()
     return ret
 
 def get_model_arch(args, train_dataset):
-    # 1. Standard ViT (Original)
     if args.architecture == "vit":
         model = ARCViT(
             num_tasks=train_dataset.num_tasks,
@@ -38,46 +29,7 @@ def get_model_arch(args, train_dataset):
             dropout=args.dropout,
             patch_size=args.patch_size,
         )
-    # 2. ViT1 (ConvGLU)
-    elif args.architecture == "vit1":
-        model = ARCViT1(
-            num_tasks=train_dataset.num_tasks,
-            image_size=args.image_size,
-            num_colors=args.num_colors,
-            embed_dim=args.embed_dim,
-            depth=getattr(args, "depth", getattr(args, "loop_core_depth", 12)),
-            num_heads=args.num_heads,
-            mlp_dim=args.mlp_dim,
-            dropout=args.dropout,
-            num_task_tokens=args.num_task_tokens,
-            patch_size=args.patch_size,
-        )
-    # 3. ViT2 (Relative Bias + ConvGLU)
-    elif args.architecture == "vit2":
-        model = ARCViT2(
-            num_tasks=train_dataset.num_tasks,
-            image_size=args.image_size,
-            num_colors=args.num_colors,
-            embed_dim=args.embed_dim,
-            depth=getattr(args, "depth", getattr(args, "loop_core_depth", 12)),
-            num_heads=args.num_heads,
-            mlp_dim=args.mlp_dim,
-            dropout=args.dropout,
-            num_task_tokens=args.num_task_tokens,
-            patch_size=args.patch_size,
-        )
-    # 4. Loop ViT (Standard or Variants)
-    elif args.architecture.startswith("loop_vit"):
-        # Determine which layer class to use
-        if args.architecture == "loop_vit":
-            layer_cls = DefaultLayer
-        elif args.architecture == "loop_vit1":
-            layer_cls = Layer1
-        elif args.architecture == "loop_vit2":
-            layer_cls = Layer2
-        else:
-            layer_cls = DefaultLayer
-
+    elif args.architecture == "loop_vit":
         model = LoopARCViT(
             num_tasks=train_dataset.num_tasks,
             image_size=args.image_size,
@@ -94,7 +46,6 @@ def get_model_arch(args, train_dataset):
             use_exit_gate=not args.disable_exit_gate,
             gate_threshold=args.exit_gate_threshold,
             add_step_embeddings=not args.no_step_embedding,
-            layer_class=layer_cls,
         )
     else:
         model = ARCUNet(
@@ -106,6 +57,8 @@ def get_model_arch(args, train_dataset):
 
     return model
 
+
+# Resume from checkpoint if specified
 def load_models(args, train_dataset, device, distributed, rank, local_rank):
     resume_checkpoint = getattr(args, "resume_checkpoint", None)
     resume_reset_epoch = bool(getattr(args, "resume_reset_epoch", False))
@@ -121,10 +74,6 @@ def load_models(args, train_dataset, device, distributed, rank, local_rank):
             key.replace("_orig_mod.", "", 1): value
             for key, value in checkpoint["model_state"].items()
         }
-        
-        # [MODIFIED] 调用插值函数处理尺寸不匹配
-        resize_relative_position_bias(state_dict, model)
-
         if args.resume_skip_task_token and "task_token_embed.weight" in state_dict:
             state_dict = {k: v for k, v in state_dict.items() if k != "task_token_embed.weight"}
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -150,6 +99,7 @@ def load_models(args, train_dataset, device, distributed, rank, local_rank):
                 raise
         model.to(device)
         
+        # Apply torch.compile for speedup (PyTorch 2.0+)
         if not args.no_compile and hasattr(torch, 'compile'):
             if (not distributed) or rank == 0:
                 print("Applying torch.compile for optimization...")
@@ -167,6 +117,7 @@ def load_models(args, train_dataset, device, distributed, rank, local_rank):
             lr=args.learning_rate,
             weight_decay=args.weight_decay,
         )
+        # Optionally restore epoch
         if "epoch" in checkpoint and not resume_reset_epoch:
             start_epoch = checkpoint["epoch"] + 1
         elif "epoch" in checkpoint and resume_reset_epoch and ((not distributed) or rank == 0):
@@ -177,6 +128,7 @@ def load_models(args, train_dataset, device, distributed, rank, local_rank):
         print(f"Parameter count: {count_parameters(model) / 1_000_000:.2f}M (excluding task tokens)")
         model.to(device)
         
+        # Apply torch.compile for speedup (PyTorch 2.0+)
         if not args.no_compile and hasattr(torch, 'compile'):
             if (not distributed) or rank == 0:
                 print("Applying torch.compile for optimization...")
@@ -195,6 +147,7 @@ def load_models(args, train_dataset, device, distributed, rank, local_rank):
             weight_decay=args.weight_decay,
         )
 
+    # Initialize GradScaler for mixed precision training
     scaler = GradScaler(enabled=(device.type == "cuda" and not args.no_amp))
     if (not distributed) or rank == 0:
         if scaler.is_enabled():
@@ -207,6 +160,8 @@ def load_models(args, train_dataset, device, distributed, rank, local_rank):
     else:
         scheduler = None
     return model, model_for_eval, optimizer, scaler, scheduler, start_epoch
+
+
 
 def load_optimizer(args, model, device, distributed, rank):
     optimizer = torch.optim.AdamW(
@@ -240,10 +195,6 @@ def load_model_only(args, train_dataset, device, distributed, rank, local_rank):
             key.replace("_orig_mod.", "", 1): value
             for key, value in checkpoint["model_state"].items()
         }
-        
-        # [MODIFIED] 调用插值函数处理尺寸不匹配
-        resize_relative_position_bias(state_dict, model)
-
         if args.resume_skip_task_token and "task_token_embed.weight" in state_dict:
             state_dict = {k: v for k, v in state_dict.items() if k != "task_token_embed.weight"}
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -269,6 +220,7 @@ def load_model_only(args, train_dataset, device, distributed, rank, local_rank):
                 raise
         model.to(device)
         
+        # Apply torch.compile for speedup (PyTorch 2.0+)
         if not args.no_compile and hasattr(torch, 'compile'):
             if (not distributed) or rank == 0:
                 print("Applying torch.compile for optimization...")
@@ -281,55 +233,3 @@ def load_model_only(args, train_dataset, device, distributed, rank, local_rank):
                 output_device=local_rank if device.type == "cuda" else None,
             )
     return model
-
-# [NEW] 辅助函数：处理 Relative Position Bias 的插值
-def resize_relative_position_bias(state_dict, model):
-    """
-    检测 state_dict 中的 relative_position_bias_table 是否与 model 中的形状不匹配。
-    如果不匹配（通常是因为 image_size 变大了），则进行 Bicubic 插值。
-    同时移除 relative_position_index（因为它是 buffer，会自动重新生成）。
-    """
-    keys_to_modify = []
-    
-    # 1. 扫描需要调整的参数
-    for key in list(state_dict.keys()):
-        # 移除 index buffer，让模型使用自己初始化的正确尺寸的 buffer
-        if "relative_position_index" in key:
-            model_buffer = dict(model.named_buffers()).get(key)
-            if model_buffer is not None and state_dict[key].shape != model_buffer.shape:
-                # print(f"Removing mismatched buffer {key}: {state_dict[key].shape} vs {model_buffer.shape}")
-                del state_dict[key]
-            continue
-
-        # 检查 bias table
-        if "relative_position_bias_table" in key:
-            ckpt_bias = state_dict[key]
-            model_param = dict(model.named_parameters()).get(key)
-            
-            if model_param is not None and ckpt_bias.shape != model_param.shape:
-                keys_to_modify.append(key)
-
-    # 2. 执行插值
-    for key in keys_to_modify:
-        ckpt_bias = state_dict[key] # [L_old, nH]
-        model_param = dict(model.named_parameters()).get(key)
-        
-        # print(f"Resizing {key}: {ckpt_bias.shape} -> {model_param.shape}")
-        
-        L_old, nH = ckpt_bias.shape
-        L_new, _ = model_param.shape
-        
-        # 假设是正方形网格: L = (2H-1)^2
-        size_old = int(math.sqrt(L_old))
-        size_new = int(math.sqrt(L_new))
-        
-        # [L_old, nH] -> [nH, L_old] -> [1, nH, size_old, size_old]
-        bias_data = ckpt_bias.permute(1, 0).view(1, nH, size_old, size_old)
-        
-        # Bicubic 插值
-        bias_data = F.interpolate(bias_data, size=(size_new, size_new), mode='bicubic', align_corners=False)
-        
-        # [1, nH, size_new, size_new] -> [nH, size_new^2] -> [size_new^2, nH]
-        bias_data = bias_data.view(nH, -1).permute(1, 0)
-        
-        state_dict[key] = bias_data

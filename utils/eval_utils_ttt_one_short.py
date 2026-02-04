@@ -4,28 +4,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 import numpy as np
-# from analysis import analyze_data
-from utils.analyze_prediction import analyze_data
+
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import os
 
-import torch.nn.functional as F
-
 IGNORE_INDEX = 10
 PAD_INDEX = 11
-
-def compute_entropy(logits):
-    """
-    Computes per-pixel Shannon entropy.
-    logits: (C, H, W)
-    Returns: 2D map of entropy (H, W), mean entropy.
-    """
-    probs = F.softmax(logits.float(), dim=0)
-    log_probs = F.log_softmax(logits.float(), dim=0)
-    ent_map = -(probs * log_probs).sum(dim=0)
-    return ent_map.cpu().numpy(), ent_map.mean().item()
 COLOR_PALETTE = [
     "#000000",
     "#0074D9",
@@ -36,9 +22,7 @@ COLOR_PALETTE = [
     "#F012BE",
     "#FF851B",
     "#7FDBFF",
-    # Background canvas padding color
     "#B10DC9",
-    # Border token color
     "#FFFFFF",
 ]
 
@@ -161,6 +145,114 @@ def get_majority_vote(predictions):
     ]
     return sorted_lists
 
+def _grid_to_html_table(grid, title):
+    if not grid:
+        return f"<div class='grid'><h4>{html.escape(title)}</h4><p class='empty'>No data</p></div>"
+    rows = []
+    for row in grid:
+        cells = []
+        for value in row:
+            color_index = value if isinstance(value, int) else IGNORE_INDEX
+            if not isinstance(value, int):
+                try:
+                    color_index = int(value)
+                except (TypeError, ValueError):
+                    color_index = IGNORE_INDEX
+            if 0 <= color_index < len(COLOR_PALETTE) - 1:
+                color = COLOR_PALETTE[color_index]
+            else:
+                color = COLOR_PALETTE[-1]
+            display_value = "" if color_index == IGNORE_INDEX else str(value)
+            cells.append(
+                f"<td style='background-color:{color}'>{html.escape(display_value)}</td>"
+            )
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    table = "".join(rows)
+    return (
+        f"<div class='grid'><h4>{html.escape(title)}</h4>"
+        f"<table class='grid-table'>{table}</table></div>"
+    )
+
+def one_shot_prediction(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    img_size: int,
+    save_name = "ttt_eval",
+):
+    model.eval()
+    answer_set = {}
+
+    dataset = getattr(loader, "dataset", None)
+    dataset.disable_translation()
+    dataset.disable_resolution_augmentation(fix_scale_factor=2)
+       
+    for batch in tqdm(loader):
+        inputs = batch["inputs"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        task_ids = batch["task_ids"].to(device)
+        offsets = batch['offset'].to(device)
+        scale_factors = batch['scale_factors'].to(device)
+
+        logits = model(inputs, task_ids, attention_mask=attention_mask)
+        preds = logits.argmax(dim=1).cpu()
+        example_indices = batch["example_indices"].cpu()
+
+        for idx, task_name in enumerate(batch["task_names"]):
+            # Get rid of augmentation suffixes
+            if '_' in task_name:
+                continue
+            scale_factor = scale_factors[idx].item()
+            base_task_name, undo_fn = task_name, _identity_transform
+
+            cur_index = example_indices[idx].item()
+            task_predictions = answer_set.setdefault(base_task_name, {})
+            if cur_index not in task_predictions:
+                task_predictions[cur_index] = []
+            
+            try:
+                offset_x, offset_y = offsets[idx]
+                np_predict = np.array(preds[idx]).reshape(img_size, img_size)
+                np_predict_grid = np_predict[offset_y:, offset_x:]
+                len_x, len_y = 0, 0
+                while len_x < np_predict_grid.shape[1] and np_predict_grid[0][len_x] != PAD_INDEX:
+                    len_x += 1
+                while len_y < np_predict_grid.shape[0] and np_predict_grid[len_y][0] != PAD_INDEX:
+                    len_y += 1
+                predict_grid = np_predict_grid[:len_y, :len_x].tolist()
+                downsampled_grid = []
+                for i in range(0, len(predict_grid), scale_factor):
+                    row = []
+                    for j in range(0, len(predict_grid[0]), scale_factor):
+                        block = []
+                        for di in range(scale_factor):
+                            for dj in range(scale_factor):
+                                if i + di < len(predict_grid) and j + dj < len(predict_grid[0]):
+                                    block.append(predict_grid[i + di][j + dj])
+                        if block:
+                            counts = np.bincount(block)
+                            majority_value = int(np.argmax(counts))
+                            row.append(majority_value)
+                    downsampled_grid.append(row)
+                predict_grid = downsampled_grid
+              
+            except Exception as e:
+                print("???")
+                print(e)
+                print(len_y, len_x)
+                print(np_predict_grid.shape)
+                exit()
+                predict_grid = []
+            task_predictions[cur_index].append(predict_grid)
+
+    assert len(answer_set.keys()) == 1, "Only support one task for TTT evaluation."
+    task_name = list(answer_set.keys())[0]
+    os.makedirs(f'outputs/{save_name}', exist_ok=True)
+    with open(f'outputs/{save_name}/{task_name}_predictions.json', 'w') as f:
+        json.dump(answer_set[task_name], f)
+   
+
+    pass
 @torch.no_grad()
 def generate_predictions(
     model: torch.nn.Module,
@@ -175,13 +267,6 @@ def generate_predictions(
     disable_translation: bool = False,
     if_fix_scale: bool = False,
     save_name = "ttt_eval",
-    task_type: str = "ARC-AGI",
-    forward_fn: Optional[Callable] = None,
-    # [NEW] Dynamic Exit parameters
-    exit_on_entropy_stable: bool = False,
-    entropy_patience: int = 2,
-    entropy_threshold_pct: float = 0.05,
-    override_max_steps: Optional[int] = None, # [NEW]
 ) -> None:
     model.eval()
     answer_set = {}
@@ -222,26 +307,13 @@ def generate_predictions(
             offsets = batch['offset'].to(device)
             scale_factors = batch['scale_factors'].to(device)
 
-            if forward_fn:
-                # Assuming forward_fn can handle extra kwargs if intended, specific to this context
-                outputs = forward_fn(model, inputs, task_ids, attention_mask, override_max_steps=override_max_steps)
-            else:
-                outputs = model(inputs, task_ids, attention_mask=attention_mask, override_max_steps=override_max_steps)
-            if isinstance(outputs, tuple):
-                logits = outputs[0]
-                metadata = outputs[1]
-                intermediates_list = outputs[2] if len(outputs) > 2 else None
-            else:
-                logits = outputs
-                metadata = None
-                intermediates_list = None
-
+            outputs = model(inputs, task_ids, attention_mask=attention_mask)
+            logits = outputs[0] if isinstance(outputs, tuple) else outputs
             preds = logits.argmax(dim=1).cpu()
             example_indices = batch["example_indices"].cpu()
 
             for idx, task_name in enumerate(batch["task_names"]):
                 scale_factor = scale_factors[idx].item()
-                # Find the base task name and undo transform if any (flip/rotate)
                 if task_transform_resolver:
                     if task_name not in transform_cache:
                         transform_cache[task_name] = task_transform_resolver(task_name)
@@ -250,52 +322,18 @@ def generate_predictions(
                     base_task_name, undo_fn = task_name, _identity_transform
 
                 cur_index = example_indices[idx].item()
-                # Find the color inverse map for this task if any
                 color_inverse_map = _resolve_color_inverse_map(
                     task_name, task_file_lookup, color_inverse_cache
                 )
+                print(color_inverse_map)
                 task_predictions = answer_set.setdefault(base_task_name, {})
                 if cur_index not in task_predictions:
                     task_predictions[cur_index] = []
               
                 try:
-                    # [NEW] Determine Prediction to use
-                    example_pred = preds[idx]
-                    
-                    if exit_on_entropy_stable and intermediates_list:
-                        num_avail = len(intermediates_list)
-                        stable_counter = 0
-                        prev_ent = None
-                        exit_at = num_avail
-                        
-                        # Find the step using entropy trend
-                        for s_idx in range(num_avail):
-                            _, ent_val = compute_entropy(intermediates_list[s_idx][idx])
-                            if prev_ent is not None:
-                                rel_decrease = (prev_ent - ent_val) / (prev_ent + 1e-8)
-                                if rel_decrease < entropy_threshold_pct:
-                                    stable_counter += 1
-                                else:
-                                    stable_counter = 0
-                                if stable_counter >= entropy_patience:
-                                    exit_at = s_idx + 1
-                                    break
-                            prev_ent = ent_val
-                        
-                        # Use the gate exit if it's earlier
-                        if metadata is not None and hasattr(metadata, "exit_steps"):
-                            gate_exit = metadata.exit_steps[idx].item()
-                            exit_at = min(exit_at, gate_exit)
-                        
-                        # Update prediction if we exited early
-                        if exit_at <= num_avail:
-                            example_pred = intermediates_list[exit_at - 1][idx].argmax(dim=0).cpu()
-
-                    # Crop out the prediction from the canvas
                     offset_x, offset_y = offsets[idx]
-                    np_predict = np.array(example_pred).reshape(img_size, img_size)
+                    np_predict = np.array(preds[idx]).reshape(img_size, img_size)
                     np_predict_grid = np_predict[offset_y:, offset_x:]
-                    # Calculate the actual length of x and y by finding the first PAD_INDEX token
                     len_x, len_y = 0, 0
                     while len_x < np_predict_grid.shape[1] and np_predict_grid[0][len_x] != PAD_INDEX:
                         len_x += 1
@@ -303,7 +341,6 @@ def generate_predictions(
                         len_y += 1
                     predict_grid = np_predict_grid[:len_y, :len_x].tolist()
                     predict_grid = undo_fn(predict_grid)
-                    # Scale down the prediction by pixel-wise majority vote if needed
                     if scale_factor > 1:
                         downsampled_grid = []
                         for i in range(0, len(predict_grid), scale_factor):
@@ -320,7 +357,6 @@ def generate_predictions(
                                     row.append(majority_value)
                             downsampled_grid.append(row)
                         predict_grid = downsampled_grid
-                    # Revert color augmentation if needed
                     predict_grid = _apply_color_map_to_grid(
                         predict_grid, color_inverse_map
                     )
@@ -332,29 +368,10 @@ def generate_predictions(
                     exit()
                     predict_grid = []
                 task_predictions[cur_index].append(predict_grid)
-                
-                # [NEW] Save exit step info
-                if 'steps' not in answer_set[base_task_name]:
-                     answer_set[base_task_name]['steps'] = {}
-                if cur_index not in answer_set[base_task_name]['steps']:
-                     answer_set[base_task_name]['steps'][cur_index] = []
-                
-                # Default to full steps if not early exited
-                final_step = exit_at if (exit_on_entropy_stable and intermediates_list) and 'exit_at' in locals() else (len(intermediates_list) if intermediates_list else 1)
-                answer_set[base_task_name]['steps'][cur_index].append(final_step)
 
     assert len(answer_set.keys()) == 1, "Only support one task for TTT evaluation."
     task_name = list(answer_set.keys())[0]
     os.makedirs(f'outputs/{save_name}', exist_ok=True)
-    
-    # Extract steps and remove from main prediction dict to keep it clean
-    steps_data = answer_set[task_name].pop('steps', {})
-    
     with open(f'outputs/{save_name}/{task_name}_predictions.json', 'w') as f:
         json.dump(answer_set[task_name], f)
-        
-    with open(f'outputs/{save_name}/{task_name}_steps.json', 'w') as f:
-        json.dump(steps_data, f)
-    
-    analyze_data(answer_set, list(answer_set.keys()), task_type)
    

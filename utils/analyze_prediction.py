@@ -69,18 +69,10 @@ def analyze_data(answer_set, task_names, task_type):
         print(f"Oracle rank {rank}: {count}. Cumulative: {(sum_correct + count) / (all_task_num):.4f}")
         sum_correct += count
     
-    print(f"Final 通用Pass@1 Score: {pass_at_1_score:.4f}")
-    print(f"Final 通用Pass@2 Score: {pass_at_2_score:.4f}")
-    
-    # [NEW] Save results to JSON for aggregation
-    # We need to find the save_name from the caller somehow, 
-    # but analyze_data doesn't know it. 
-    # Actually, analyze_data is called from eval_utils_ttt.py which knows the directory.
-    # I'll modify the signature to accept output_dir if I can, 
-    # or just rely on analyze_data to return the scores.
-    
-    return {
-        "pass_at_1": pass_at_1_score,
-        "pass_at_2": pass_at_2_score,
-        "oracle": oracle_score
-    }
+    print(f"Final Oracle Score: {oracle_score:.4f}")
+    print(f"Final Pass@1 Score: {pass_at_1_score:.4f}")
+    print(f"Final Pass@2 Score: {pass_at_2_score:.4f}")
+    if pass_at_1_score or pass_at_2_score:
+        print(f"Current task {task_names[0]} is Correct!✅")
+    else:
+        print(f"Current task {task_names[0]} is Wrong!❌")

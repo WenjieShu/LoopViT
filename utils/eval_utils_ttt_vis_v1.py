@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple, List
 from PIL import Image
-import sys
+
 # Reuse existing analysis tool
 from utils.analyze_prediction import analyze_data
 # Reuse existing wandb vis for color mapping
@@ -208,7 +208,7 @@ def prob_diff_to_image_array(prob_diff_map, max_h=32, max_w=32):
 
 def compute_prob_diff(logits_prev, logits_curr):
     """
-    Computes L2 difference between Softmax Probabilities.
+    Computes difference between Softmax Probabilities.
     logits: (C, H, W)
     Returns: 2D map of differences (H, W).
     """
@@ -217,6 +217,7 @@ def compute_prob_diff(logits_prev, logits_curr):
     probs_c = F.softmax(logits_curr.float(), dim=0) # (C, H, W)
     
     # Diff L2 Norm per pixel
+    # sum((p_c - p_p)^2) per pixel
     diff = probs_c - probs_p
     diff_norms = torch.norm(diff, p=2, dim=0) # (H, W)
     
@@ -225,140 +226,68 @@ def compute_prob_diff(logits_prev, logits_curr):
     
     return diff_map, mean_diff
 
-def compute_entropy(logits):
-    """
-    Computes per-pixel Shannon entropy.
-    logits: (C, H, W)
-    Returns: 2D map of entropy (H, W), mean entropy.
-    """
-    probs = F.softmax(logits.float(), dim=0)
-    log_probs = F.log_softmax(logits.float(), dim=0)
-    ent_map = -(probs * log_probs).sum(dim=0)
-    return ent_map.cpu().numpy(), ent_map.mean().item()
 
-def compute_cosine_similarity(logits1, logits2):
-    """
-    Computes per-pixel cosine similarity between logit vectors.
-    logits: (C, H, W)
-    Returns: 2D map of similarity (H, W), mean similarity.
-    """
-    # F.cosine_similarity operates on vectors. For each pixel (H,W), we have a vector of size C.
-    cos_sim = F.cosine_similarity(logits1.float(), logits2.float(), dim=0)
-    return cos_sim.cpu().numpy(), cos_sim.mean().item()
-
-
-def cos_sim_to_image_array(cos_sim_map, max_h=32, max_w=32):
-    """
-    Visualizes cosine similarity as a heatmap.
-    Range: [-1, 1]. 1.0 is stable (White).
-    """
-    if cos_sim_map is None:
-        return np.full((max_h * PIL_IMG_MAG, max_w * PIL_IMG_MAG, 3), 128, dtype=np.uint8)
-
-    # Emphasize the range [0.8, 1.0] 
-    norm = np.clip((cos_sim_map - 0.8) / 0.2, 0, 1)
-    val = (norm * 255).astype(np.uint8)
-    
-    # Blue scale: 1.0 (White) -> <1.0 (Cyan/Blue)
-    r_ch = val
-    g_ch = val
-    b_ch = np.full_like(val, 255)
-    rgb_grid = np.stack([r_ch, g_ch, b_ch], axis=-1)
-    
-    h, w = cos_sim_map.shape
-    mult_factor = min((max_h*PIL_IMG_MAG)//max(h, 1), (max_w*PIL_IMG_MAG)//max(w, 1))
-    mult_factor = max(mult_factor, 1)
-    
-    rgb_grid = np.repeat(np.repeat(rgb_grid, mult_factor, axis=0), mult_factor, axis=1)
-    
-    final_h, final_w = max_h * PIL_IMG_MAG, max_w * PIL_IMG_MAG
-    padded = np.full((final_h, final_w, 3), 255, dtype=np.uint8)
-    
-    ph, pw, _ = rgb_grid.shape
-    start_h = (final_h - ph) // 2
-    start_w = (final_w - pw) // 2
-    ph = min(ph, final_h)
-    pw = min(pw, final_w)
-    
-    padded[start_h:start_h+ph, start_w:start_w+pw, :] = rgb_grid[:ph, :pw, :]
-    return padded
-
-def _pad_row(img_list, padding_width=10):
-    if not img_list: return None
-    h, w, c = img_list[0].shape
-    spacer = np.full((h, padding_width, c), 255, dtype=np.uint8)
-    padded = []
-    for i, img in enumerate(img_list):
-        padded.append(img)
-        if i < len(img_list) - 1:
-            padded.append(spacer)
-    return np.concatenate(padded, axis=1)
-
-def create_filmstrip(input_grid, intermediates, final_grid, target_grid, save_path, diff_infos=None, cos_sim_infos=None, padding_width=10):
+def create_filmstrip(input_grid, intermediates, final_grid, target_grid, save_path, diff_infos=None, padding_width=10):
     """
     Stitches grids into a horizontal filmstrip. 
     Row 2: Probability Difference Heatmaps.
-    Row 3: Cosine Similarity Heatmaps.
     """
     # ROW 1: Input -> Steps -> Target
     row1_images = []
+    
     row1_images.append(grid_to_image_array(input_grid))
     for grid in intermediates:
         row1_images.append(grid_to_image_array(grid))
+    
     if target_grid is not None:
          row1_images.append(grid_to_image_array(target_grid))
     
-    # Row 2: Probability Diff (Red)
+    # Row 2: Empty -> Diffs -> Empty
     row2_images = []
-    if diff_infos is not None:
+    if diff_infos:
         h, w, c = row1_images[0].shape
-        empty_block = np.full((h, w, c), 255, dtype=np.uint8)
+        empty_block = np.full((h, w, c), 255, dtype=np.uint8) # White
         row2_images.append(empty_block) # Under Input
+        
         for d_map, d_val in diff_infos:
-            if d_map is None: row2_images.append(empty_block)
-            else: row2_images.append(prob_diff_to_image_array(d_map))
+            if d_map is None:
+                row2_images.append(empty_block)
+            else:
+                row2_images.append(prob_diff_to_image_array(d_map))
+        
         if target_grid is not None:
              row2_images.append(empty_block) 
 
-    # Row 3: Cosine Similarity (Cyan/Blue)
-    row3_images = []
-    if cos_sim_infos is not None:
-        h, w, c = row1_images[0].shape
-        empty_block = np.full((h, w, c), 255, dtype=np.uint8)
-        row3_images.append(empty_block) # Under Input
-        for c_map, c_val in cos_sim_infos:
-            if c_map is None: row3_images.append(empty_block)
-            else: row3_images.append(cos_sim_to_image_array(c_map))
-        if target_grid is not None:
-             row3_images.append(empty_block)
+    def pad_row(img_list):
+        if not img_list: return None
+        h, w, c = img_list[0].shape
+        spacer = np.full((h, padding_width, c), 255, dtype=np.uint8)
+        padded = []
+        for i, img in enumerate(img_list):
+            padded.append(img)
+            if i < len(img_list) - 1:
+                padded.append(spacer)
+        return np.concatenate(padded, axis=1)
 
-    rows = []
-    rows.append(_pad_row(row1_images, padding_width))
+    strip_row1 = pad_row(row1_images)
+    
     if row2_images:
-        rows.append(_pad_row(row2_images, padding_width))
-    if row3_images:
-        rows.append(_pad_row(row3_images, padding_width))
+        strip_row2 = pad_row(row2_images)
+        h1, w1, c1 = strip_row1.shape
+        v_spacer = np.full((padding_width, w1, c1), 255, dtype=np.uint8)
+        
+        if strip_row2.shape[1] != w1:
+             if strip_row2.shape[1] < w1:
+                 pad_w = w1 - strip_row2.shape[1]
+                 strip_row2 = np.pad(strip_row2, ((0,0),(0,pad_w),(0,0)), constant_values=255)
+             else:
+                 strip_row2 = strip_row2[:, :w1, :]
 
-    w_target = rows[0].shape[1]
-    final_rows = []
-    for r in rows:
-        if r.shape[1] != w_target:
-            if r.shape[1] < w_target:
-                p = np.full((r.shape[0], w_target - r.shape[1], 3), 255, dtype=np.uint8)
-                r = np.concatenate([r, p], axis=1)
-            else:
-                r = r[:, :w_target, :]
-        final_rows.append(r)
+        filmstrip = np.concatenate([strip_row1, v_spacer, strip_row2], axis=0)
+    else:
+        filmstrip = strip_row1
     
-    v_spacer = np.full((padding_width, w_target, 3), 255, dtype=np.uint8)
-    final_images = []
-    for i, r in enumerate(final_rows):
-        final_images.append(r)
-        if i < len(final_rows) - 1:
-            final_images.append(v_spacer)
-    
-    full_strip = np.concatenate(final_images, axis=0)
-    Image.fromarray(full_strip).save(save_path)
+    Image.fromarray(filmstrip).save(save_path)
 
 
 @torch.no_grad()
@@ -378,11 +307,6 @@ def generate_predictions(
     task_type: str = "ARC-AGI",
     forward_fn: Optional[Callable] = None,
     visualize_loop_steps: bool = False,
-    visualize_attention: bool = False,
-    # [NEW] Dynamic Exit parameters
-    exit_on_entropy_stable: bool = False,
-    entropy_patience: int = 2,
-    entropy_threshold_pct: float = 0.05, # stop if < 5% decrease
 ) -> None:
     model.eval()
     
@@ -434,7 +358,6 @@ def generate_predictions(
             task_ids = batch["task_ids"].to(device)
             offsets = batch['offset'].to(device)
             scale_factors = batch['scale_factors'].to(device)
-            example_indices = batch["example_indices"].cpu() # [MOVED] Defined early for use in dumping
             if "targets" in batch:
                 targets = batch["targets"].to(device)
             else:
@@ -446,103 +369,19 @@ def generate_predictions(
             if forward_fn is not None:
                 ret = forward_fn(model, inputs, task_ids, attention_mask)
             else:
-                ret = model(inputs, task_ids, attention_mask=attention_mask, return_attn=visualize_attention)
+                ret = model(inputs, task_ids, attention_mask=attention_mask)
             
-            all_steps_attn_data = None
             if isinstance(ret, tuple):
-                if len(ret) == 5:
-                     logits, metadata, intermediates_list, all_steps_attn_data, intermediate_hidden_list = ret
-                elif len(ret) == 4:
-                     logits, metadata, intermediates_list, all_steps_attn_data = ret
-                     intermediate_hidden_list = None
-                elif len(ret) == 3:
+                if len(ret) == 3:
                      # intermediates_list = [logits_t1, logits_t2 ...]
-                     logits, metadata, intermediates_list = ret
-                     all_steps_attn_data = None
-                     intermediate_hidden_list = None
+                     logits, metadata, intermediates_list = ret 
                 else:
                      logits, metadata = ret
                      intermediates_list = []
-                     all_steps_attn_data = None
-                     intermediate_hidden_list = None
             else:
                 logits = ret
                 metadata = None
                 intermediates_list = []
-                all_steps_attn_data = None
-                intermediate_hidden_list = None
-
-            # Dump Attention Data if Requested
-            if visualize_attention and all_steps_attn_data:
-                dump_dir = save_path / "dumps"
-                dump_dir.mkdir(parents=True, exist_ok=True)
-                
-                for idx, task_name in enumerate(batch["task_names"]):
-                    cur_index = example_indices[idx].item()
-                    
-                    # [FILTER] For visualization, skip augmentations to reduce noise
-                    is_augmented = any(x in task_name for x in ["augmented", "rotate", "flip", "perm"])
-                    if visualize_attention and is_augmented:
-                         continue
-
-                    # Unpack batch attn to single item
-                    example_attn = []
-                    for step_data in all_steps_attn_data:
-                        step_ex = []
-                        for layer_data in step_data:
-                            layer_ex = {}
-                            if "scores" in layer_data: layer_ex["scores"] = layer_data["scores"][idx:idx+1]
-                            if "attn" in layer_data: layer_ex["attn"] = layer_data["attn"][idx:idx+1]
-                            step_ex.append(layer_ex)
-                        example_attn.append(step_ex)
-                    
-                    # Unpack hidden states if available
-                    example_hidden = []
-                    if intermediate_hidden_list:
-                        for h in intermediate_hidden_list:
-                             example_hidden.append(h[idx:idx+1])
-
-                    # Calculate Entropy for convenience
-                    example_entropy = []
-                    if intermediates_list:
-                        for step_logits in intermediates_list:
-                            # step_logits: (B, C, H, W) -> Extract current example -> (1, C, H, W)
-                            probs = F.softmax(step_logits[idx:idx+1], dim=1)
-                            ent = -torch.sum(probs * torch.log(probs + 1e-8), dim=1) # (1, H, W)
-                            example_entropy.append(ent.cpu())
-
-                    dump_payload = {
-                        "inputs": inputs[idx:idx+1].cpu(),
-                        "attention_mask": attention_mask[idx:idx+1].cpu() if attention_mask is not None else None,
-                        "logits": logits[idx:idx+1].cpu(),
-                        "all_steps_attn": example_attn,
-                        "all_steps_hidden": example_hidden,
-                        "all_steps_logits": [l[idx:idx+1].cpu() for l in intermediates_list] if intermediates_list else [],
-                        "all_steps_entropy": example_entropy,
-                        "meta": {
-                            "task_name": task_name, 
-                            "example_index": cur_index,
-                            "image_size": img_size,
-                        }
-                    }
-                    dump_file = dump_dir / f"{task_name}_ex{cur_index}.pt"
-                    torch.save(dump_payload, dump_file)
-                    
-                    # Call Renderer
-                    import subprocess
-                    script_path = Path("utils/vis_renderer.py").absolute()
-                    cmd = [
-                        sys.executable, str(script_path),
-                        "--dump-path", str(dump_file),
-                        "--out-dir", str(viz_dir)
-                    ]
-                    # Blocking to ensure we get it. Capture output for debugging.
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode != 0:
-                        print(f"[Renderer Error] Task {task_name} Ex {cur_index} failed:")
-                        print(result.stderr)
-                    else:
-                        print(f"[Renderer Success] Task {task_name} Ex {cur_index}")
 
             batch_size = logits.size(0)
             preds = logits.argmax(dim=1).cpu()  # Final predictions
@@ -566,34 +405,7 @@ def generate_predictions(
                     exited_at_step_val = exit_steps[b].item()
                     
                     num_avail_steps = len(acc_steps)
-                    
-                    # [NEW] Check for Entropy-based Early Exit
-                    if exit_on_entropy_stable:
-                        stable_counter = 0
-                        prev_ent = None
-                        proposed_exit = num_avail_steps
-                        
-                        for s_idx in range(num_avail_steps):
-                            # compute_entropy takes (C, H, W)
-                            _, ent_val = compute_entropy(step_logits_list[s_idx][b])
-                            
-                            if prev_ent is not None:
-                                # Relative decrease
-                                rel_decrease = (prev_ent - ent_val) / (prev_ent + 1e-8)
-                                if rel_decrease < entropy_threshold_pct:
-                                    stable_counter += 1
-                                else:
-                                    stable_counter = 0
-                                
-                                if stable_counter >= entropy_patience:
-                                    proposed_exit = s_idx + 1 # Exit at this step
-                                    break
-                            prev_ent = ent_val
-                        
-                        # We use the EARLIEST exit suggested (Gate or Entropy)
-                        exited_at_step_val = min(exited_at_step_val, proposed_exit)
-
-                    final_frozen_pred = preds[b] if exited_at_step_val >= num_avail_steps else acc_steps[exited_at_step_val-1][b]
+                    final_frozen_pred = preds[b]
                     
                     for s_idx in range(num_avail_steps):
                         current_step_val = s_idx + 1
@@ -602,9 +414,10 @@ def generate_predictions(
                             sample_logits.append(step_logits_list[s_idx][b])
                         else:
                             # Freeze
-                            sample_steps.append(sample_steps[-1] if sample_steps else final_frozen_pred)
+                            sample_steps.append(final_frozen_pred)
                             # Logits freeze to last valid
-                            sample_logits.append(sample_logits[-1] if sample_logits else step_logits_list[0][b])
+                            last_valid_idx = max(0, exited_at_step_val - 1)
+                            sample_logits.append(step_logits_list[last_valid_idx][b])
                     
                     all_steps_preds_raw.append(sample_steps)
                     all_steps_logits.append(sample_logits)
@@ -613,6 +426,7 @@ def generate_predictions(
                     all_steps_preds_raw.append([preds[b]])
                     all_steps_logits.append([None]) 
 
+            example_indices = batch["example_indices"].cpu()
 
             for idx, task_name in enumerate(batch["task_names"]):
                 scale_factor = scale_factors[idx].item()
@@ -660,7 +474,6 @@ def generate_predictions(
                     
                     processed_steps = []
                     diff_infos = [] 
-                    cos_sim_infos = []
                     sample_stats = []
                     
                     for s_i, raw_s in enumerate(sample_steps_raw):
@@ -672,71 +485,34 @@ def generate_predictions(
                         if cur_index not in task_step_preds: task_step_preds[cur_index] = []
                         task_step_preds[cur_index].append(step_grid)
 
-                        # Output Metrics
+                        # Output Probability Diff
                         curr_logits = sample_logits[s_i]
-                        d_val, d_map = 0.0, None
-                        cos_val, cos_map = 1.0, None
-                        ent_map, ent_val = compute_entropy(curr_logits)
+                        d_val = 0.0
+                        d_map = None
                         
                         if s_i == 0:
-                            zero_baseline = torch.zeros_like(curr_logits)
-                            d_map, d_val = compute_prob_diff(zero_baseline, curr_logits)
-                            cos_map, cos_val = compute_cosine_similarity(zero_baseline, curr_logits)
+                            d_val = -1.0 # First step, no prev
                         else:
                             prev_logits = sample_logits[s_i-1]
                             d_map, d_val = compute_prob_diff(prev_logits, curr_logits)
-                            cos_map, cos_val = compute_cosine_similarity(prev_logits, curr_logits)
                         
                         diff_infos.append((d_map, d_val))
-                        cos_sim_infos.append((cos_map, cos_val))
-                        sample_stats.append({
-                            "step": s_i + 1,
-                            "prob_diff": d_val,
-                            "cos_sim": cos_val,
-                            "entropy": ent_val
-                        })
+                        sample_stats.append({"step": s_i+1, "prob_diff": d_val})
 
-                    # Record Stats
+                    # Record Stats: Just key by task name for now in memory
                     task_stats = convergence_stats.setdefault(base_task_name, {})
                     if cur_index not in task_stats: task_stats[cur_index] = []
                     task_stats[cur_index] = sample_stats 
 
-                    # 3. Visualizations & Dumps
+                    # 3. Visualizations
                     if visualize_loop_steps:
                         input_grid = process_grid(inputs[idx].cpu())
                         target_grid = None
                         if targets is not None:
                              target_grid = process_grid(targets[idx].cpu())
                         
-                        # Save detailed Pt dump for offline analysis
-                        dump_payload = {
-                            "task_name": base_task_name,
-                            "index": cur_index,
-                            "input_grid": input_grid,
-                            "target_grid": target_grid,
-                            "steps": []
-                        }
-                        for s_idx in range(len(processed_steps)):
-                            c_ent_map, _ = compute_entropy(sample_logits[s_idx])
-                            dump_payload["steps"].append({
-                                "step": s_idx + 1,
-                                "grid": processed_steps[s_idx],
-                                "prob_diff_map": diff_infos[s_idx][0],
-                                "cos_sim_map": cos_sim_infos[s_idx][0],
-                                "entropy_map": c_ent_map
-                            })
-                        torch.save(dump_payload, viz_dir / f"{base_task_name}_{cur_index}_dump.pt")
-
                         filename = f"{base_task_name}_ex{cur_index}.png"
-                        create_filmstrip(
-                            input_grid, 
-                            processed_steps, 
-                            final_grid, 
-                            target_grid, 
-                            viz_dir / filename, 
-                            diff_infos=diff_infos,
-                            cos_sim_infos=cos_sim_infos
-                        )
+                        create_filmstrip(input_grid, processed_steps, final_grid, target_grid, viz_dir / filename, diff_infos=diff_infos)
 
                 except Exception as e:
                     print(f"Error processing {task_name} ex {cur_index}: {e}")
