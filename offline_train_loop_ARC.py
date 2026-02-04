@@ -8,7 +8,10 @@ from typing import Any, Dict, Tuple
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from torch.amp import GradScaler, autocast
+try:
+    from torch.amp import GradScaler, autocast
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 from utils.args import (

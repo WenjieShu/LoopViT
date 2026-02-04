@@ -6,15 +6,14 @@ import os
 
 from src.ARC_ViT import ARCTransformerEncoderLayer as DefaultLayer
 from src.ARC_ViT import ARCViT  
-from src.ARC_LoopViT import LoopARCViT
-from src.ARC_UNet import ARCUNet
-
-# [NEW] 导入新的模型和层
-from src.ARC_ViT1 import ARCViT1, ARCTransformerEncoderLayer as Layer1
-from src.ARC_ViT2 import ARCViT2, ARCTransformerEncoderLayer as Layer2
+from src.ARC_LoopViT_v1 import LoopARCViT
+# from src.ARC_UNet import ARCUNet
 
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.amp import GradScaler
+try:
+    from torch.amp import GradScaler
+except ImportError:
+    from torch.cuda.amp import GradScaler
 from utils.lr_scheduler import get_cosine_schedule_with_warmup
 
 def count_parameters(model):
@@ -38,46 +37,9 @@ def get_model_arch(args, train_dataset):
             dropout=args.dropout,
             patch_size=args.patch_size,
         )
-    # 2. ViT1 (ConvGLU)
-    elif args.architecture == "vit1":
-        model = ARCViT1(
-            num_tasks=train_dataset.num_tasks,
-            image_size=args.image_size,
-            num_colors=args.num_colors,
-            embed_dim=args.embed_dim,
-            depth=getattr(args, "depth", getattr(args, "loop_core_depth", 12)),
-            num_heads=args.num_heads,
-            mlp_dim=args.mlp_dim,
-            dropout=args.dropout,
-            num_task_tokens=args.num_task_tokens,
-            patch_size=args.patch_size,
-        )
-    # 3. ViT2 (Relative Bias + ConvGLU)
-    elif args.architecture == "vit2":
-        model = ARCViT2(
-            num_tasks=train_dataset.num_tasks,
-            image_size=args.image_size,
-            num_colors=args.num_colors,
-            embed_dim=args.embed_dim,
-            depth=getattr(args, "depth", getattr(args, "loop_core_depth", 12)),
-            num_heads=args.num_heads,
-            mlp_dim=args.mlp_dim,
-            dropout=args.dropout,
-            num_task_tokens=args.num_task_tokens,
-            patch_size=args.patch_size,
-        )
-    # 4. Loop ViT (Standard or Variants)
+    # 2. Loop ViT (Standard or Variants)
     elif args.architecture.startswith("loop_vit"):
-        # Determine which layer class to use
-        if args.architecture == "loop_vit":
-            layer_cls = DefaultLayer
-        elif args.architecture == "loop_vit1":
-            layer_cls = Layer1
-        elif args.architecture == "loop_vit2":
-            layer_cls = Layer2
-        else:
-            layer_cls = DefaultLayer
-
+        layer_cls = DefaultLayer
         model = LoopARCViT(
             num_tasks=train_dataset.num_tasks,
             image_size=args.image_size,
@@ -97,13 +59,8 @@ def get_model_arch(args, train_dataset):
             layer_class=layer_cls,
         )
     else:
-        model = ARCUNet(
-            num_tasks=train_dataset.num_tasks,
-            image_size=args.image_size,
-            num_colors=args.num_colors,
-            size=args.unet_size,
-        )
-
+        raise ValueError(f"Unknown architecture: {args.architecture}. Only 'vit' and 'loop_vit*' supported.")
+    
     return model
 
 def load_models(args, train_dataset, device, distributed, rank, local_rank):

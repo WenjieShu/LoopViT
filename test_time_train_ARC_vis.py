@@ -1,4 +1,3 @@
-from __future__ import annotations
 import argparse
 from copy import deepcopy
 import random
@@ -8,22 +7,28 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-try:
-    from torch.amp import autocast
-except ImportError:
-    from torch.cuda.amp import autocast
+from torch.amp import autocast
+
+# --- MONKEY PATCH START ---
+# We need to swap LoopARCViT with our visualization version BEFORE other utils use it
+import utils.load_model
+from src.ARC_LoopViT_Vis import LoopARCViT as LoopARCViT_Vis
+utils.load_model.LoopARCViT = LoopARCViT_Vis
+print("[Info] Monkey-patched LoopARCViT with LoopARCViT_Vis for visualization.")
+# ---------------------------
+
 from utils.args import parse_args
 from utils.distribution import init_distributed_mode
 from utils.load_model import load_model_only, load_optimizer
 
 from src.ARC_loader import build_dataloaders, IGNORE_INDEX
-from utils.eval_utils_ttt import generate_predictions, get_eval_rot_transform_resolver
+# Use our VIZ version of generate_predictions
+from utils.eval_utils_ttt_vis import generate_predictions, get_eval_rot_transform_resolver
 
-def _loop_forward_kwargs(eval_mode: bool) -> Dict[str, Any]:
+
+def _loop_forward_kwargs(eval_mode: bool, visualize: bool = False) -> Dict[str, Any]:
     current_args = globals().get("args")
     
-    # [MODIFIED] 更稳健的判断：只要架构名称以 "loop" 开头，就注入 loop 参数
-    # 这样支持 loop_vit, loop_vit1, loop_vit2
     arch = getattr(current_args, "architecture", None)
     if current_args is None or arch is None or not arch.startswith("loop"):
         return {}
@@ -32,10 +37,16 @@ def _loop_forward_kwargs(eval_mode: bool) -> Dict[str, Any]:
     if current_args.disable_exit_gate:
         enable_dynamic_exit = False
 
-    return {
+    kwargs = {
         "dynamic_exit": enable_dynamic_exit,
         "gate_threshold": current_args.exit_gate_threshold,
     }
+    
+    # Enable intermediate returns if strictly in eval mode AND visualization is requested
+    if eval_mode and visualize:
+         kwargs["return_intermediates"] = True
+         
+    return kwargs
 
 
 def _run_model_forward(
@@ -45,26 +56,27 @@ def _run_model_forward(
     attention_mask: torch.Tensor,
     *,
     eval_mode: bool,
-    return_intermediates: bool = False,
-    **kwargs,
-) -> torch.Tensor | tuple[torch.Tensor, Any, List[torch.Tensor]]:
-    forward_kwargs = _loop_forward_kwargs(eval_mode)
+    visualize: bool = False,
+    visualize_attention: bool = False,
+) -> torch.Tensor | Any:
+    forward_kwargs = _loop_forward_kwargs(eval_mode, visualize)
     outputs = model(
         inputs,
         task_ids,
         attention_mask=attention_mask,
-        return_intermediates=return_intermediates,
+        return_attn=visualize_attention,
         **forward_kwargs,
-        **kwargs,
     )
-    if return_intermediates:
-        return outputs
-        
-    if isinstance(outputs, tuple):
-        logits, _ = outputs
+    # If not visualizing, we expect standard output behavior or need to handle tuple
+    if not visualize:
+        if isinstance(outputs, tuple):
+            logits, _ = outputs
+        else:
+            logits = outputs
+        return logits
     else:
-        logits = outputs
-    return logits
+        # If visualizing, return whatever the model returns (likely tuple of 3)
+        return outputs
 
 
 def _format_eta(seconds: float) -> str:
@@ -80,12 +92,22 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def ttt_once(model, device, distributed, rank, train_loader, train_sampler, eval_loader, cur_attempt_idx,
-             exit_on_entropy_stable: bool = False,
-             entropy_patience: int = 2,
-             entropy_threshold_pct: float = 0.05,
-             runtime_max_steps: Optional[int] = None, # [NEW]
-             ):
+def ttt_once(
+    model, 
+    device, 
+    distributed, 
+    rank, 
+    train_loader, 
+    train_sampler, 
+    eval_loader, 
+    cur_attempt_idx,
+    visualize_loop_steps: bool = False,
+    visualize_attention: bool = False,
+    # [NEW] Dynamic Exit
+    exit_on_entropy_stable: bool = False,
+    entropy_patience: int = 2,
+    entropy_threshold_pct: float = 0.05,
+):
     autocast_device_type = device.type if device.type in {"cuda", "cpu", "mps"} else "cuda"
     is_main_process = (not distributed) or rank == 0
 
@@ -224,6 +246,7 @@ def ttt_once(model, device, distributed, rank, train_loader, train_sampler, eval
     if distributed and dist.is_initialized():
         dist.destroy_process_group()
 
+    # Pass the visualize option to generate_predictions
     generate_predictions(
         model,
         eval_loader,
@@ -234,26 +257,84 @@ def ttt_once(model, device, distributed, rank, train_loader, train_sampler, eval
         fix_scale_factor=args.fix_scale_factor,
         disable_translation=args.disable_translation,
         if_fix_scale=args.disable_resolution_augmentation,
-        save_name=args.eval_save_name + "_attempt_" + str(cur_attempt_idx),
+        # [MODIFIED] Only append attempt suffix if num_attempts > 1
+        save_name = args.eval_save_name + ("_attempt_" + str(cur_attempt_idx) if args.num_attempts > 1 else ""),
         eval_split=args.eval_split,
         task_type=args.data_root.split("/")[-1],  # e.g., "ARC-AGI"
-        forward_fn=lambda model_ref, inp, task, mask, **kwargs: _run_model_forward(
+        forward_fn=lambda model_ref, inp, task, mask: _run_model_forward(
             model_ref,
             inp,
             task,
             mask,
             eval_mode=True,
-            return_intermediates=True, # Need intermediates for entropy calculation
-            **kwargs # Pass runtime overrides like override_max_steps
+            visualize=visualize_loop_steps,
+            visualize_attention=visualize_attention,
         ),
+        visualize_loop_steps=visualize_loop_steps,
+        visualize_attention=visualize_attention,
         # [NEW] Pass Dynamic Exit Params
         exit_on_entropy_stable=exit_on_entropy_stable,
         entropy_patience=entropy_patience,
         entropy_threshold_pct=entropy_threshold_pct,
-        override_max_steps=runtime_max_steps, # [NEW] Pass runtime override
     )
 
 def train(args: argparse.Namespace) -> None:
+    # Add manual argument for visualization
+    # Ideally should be in parse_args but we are not modifying args.py
+    # We will assume it's passed via CLI to this script's patched parse_args, 
+    # OR we just check if it's in sys.argv since args object might not have it if not defined in p.add_argument
+    # But wait, we imported parse_args from utils.args. 
+    # We can inject it into args if we want, or just rely on a new argparse here?
+    # No, let's use a simple approach: check if --visualize-loop-steps is in args (if we add it) 
+    # or just use a separate parser.
+    # Actually, the user asked for "new test time train arc python file".
+    # We can add the argument to the `parse_args` returned object if we can't change `utils.args`.
+    # But `utils.args.parse_args` defines the parser.
+    
+    # Quick fix: manually check sys.argv for the flag before parsing, or add it to the namespace after parsing?
+    # `parse_args` will fail if it sees an unknown argument.
+    # So we need to strip it out before calling `parse_args`?
+    # Or we can just reuse the script arguments and hardcode visualization to True for this script 
+    # since it is explicitly `test_time_train_ARC_vis.py`.
+    # Let's hardcode it to True for this script. Or check an env var?
+    # Let's try to parse it properly.
+    
+    pass
+
+if __name__ == "__main__":
+    # Hack to allow extra arg without modifying utils.args
+    visualize = False
+    if "--visualize-loop-steps" in sys.argv:
+        visualize = True
+        sys.argv.remove("--visualize-loop-steps")
+    
+    visualize_attn = False
+    if "--visualize-attention" in sys.argv:
+        visualize_attn = True
+        sys.argv.remove("--visualize-attention")
+        
+    # [NEW] Dynamic Exit Args
+    exit_on_ent = False
+    if "--exit-on-entropy-stable" in sys.argv:
+        exit_on_ent = True
+        sys.argv.remove("--exit-on-entropy-stable")
+    
+    ent_patience = 2
+    if "--entropy-patience" in sys.argv:
+        p_idx = sys.argv.index("--entropy-patience")
+        ent_patience = int(sys.argv[p_idx + 1])
+        sys.argv.pop(p_idx + 1)
+        sys.argv.pop(p_idx)
+        
+    ent_threshold = 0.05
+    if "--entropy-threshold-pct" in sys.argv:
+        t_idx = sys.argv.index("--entropy-threshold-pct")
+        ent_threshold = float(sys.argv[t_idx + 1])
+        sys.argv.pop(t_idx + 1)
+        sys.argv.pop(t_idx)
+    
+    args = parse_args()
+    
     distributed, rank, world_size, local_rank, device = init_distributed_mode(args)
     set_seed(args.seed + (rank if distributed else 0))
 
@@ -278,53 +359,11 @@ def train(args: argparse.Namespace) -> None:
         model = deepcopy(model_original)
         print(f"Starting test-time training attempt {attempt_idx + 1}/{args.ttt_num_each}...")
         ttt_once(model=model, device=device, distributed=distributed, rank=rank,
-                train_loader=train_loader, train_sampler=train_sampler,
-                eval_loader=eval_loader, cur_attempt_idx=attempt_idx,
-                exit_on_entropy_stable=args.exit_on_entropy_stable,
-                entropy_patience=args.entropy_patience,
-                entropy_threshold_pct=args.entropy_threshold_pct,
-                runtime_max_steps=args.runtime_max_steps)
-
-
-
-if __name__ == "__main__":
-    # [NEW] Dynamic Exit Args Interception
-    exit_on_ent = False
-    if "--exit-on-entropy-stable" in sys.argv:
-        exit_on_ent = True
-        sys.argv.remove("--exit-on-entropy-stable")
-    
-    ent_patience = 2
-    if "--entropy-patience" in sys.argv:
-        p_idx = sys.argv.index("--entropy-patience")
-        ent_patience = int(sys.argv[p_idx + 1])
-        sys.argv.pop(p_idx + 1)
-        sys.argv.pop(p_idx)
-        
-    ent_threshold = 0.05
-    if "--entropy-threshold-pct" in sys.argv:
-        idx = sys.argv.index("--entropy-threshold-pct")
-        ent_threshold = float(sys.argv[idx + 1])
-        del sys.argv[idx:idx + 2]
-
-    # [NEW] Intercept runtime-max-steps
-    runtime_max_steps = None
-    if "--runtime-max-steps" in sys.argv:
-        idx = sys.argv.index("--runtime-max-steps")
-        runtime_max_steps = int(sys.argv[idx + 1])
-        del sys.argv[idx:idx + 2]
-
-    # [STABILITY] For TTT, torch.compile often causes head-aches with deepcopy or per-task overhead
-    # Default to no-compile unless explicitly requested with a hidden flag (or if the user didn't provide --no-compile)
-    if "--no-compile" not in sys.argv:
-        sys.argv.append("--no-compile")
-
-    args = parse_args()
-    
-    # Store intercepted args back into Namespace for clean passing
-    args.exit_on_entropy_stable = exit_on_ent
-    args.entropy_patience = ent_patience
-    args.entropy_threshold_pct = ent_threshold
-    args.runtime_max_steps = runtime_max_steps # [NEW]
-    
-    train(args)
+                 train_loader=train_loader, train_sampler=train_sampler,
+                 eval_loader=eval_loader, cur_attempt_idx=attempt_idx,
+                 visualize_loop_steps=visualize,
+                 visualize_attention=visualize_attn,
+                 # [NEW] Pass through
+                 exit_on_entropy_stable=exit_on_ent,
+                 entropy_patience=ent_patience,
+                 entropy_threshold_pct=ent_threshold)

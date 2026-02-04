@@ -1,7 +1,7 @@
 # LoopViT: Scaling Visual ARC with Looped Transformers
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Paper](https://img.shields.io/badge/Paper-Arxiv-red.svg)](https://github.com/WenjieShu/LoopViT)
+[![Paper](https://img.shields.io/badge/Paper-Arxiv-red.svg)](https://arxiv.org/abs/2602.02156)
 
 This is the official implementation of **LoopViT**, a recursive vision transformer architecture designed to solve abstract reasoning tasks in the [Abstraction and Reasoning Corpus (ARC)](https://github.com/fchollet/ARC).
 
@@ -31,13 +31,13 @@ Conventional Vision Transformers (ViTs) follow a **feed-forward paradigm**, wher
 
 ## 🛠️ Installation
 
-1. Clone the repository:
+1. **Clone the repository:**
    ```bash
    git clone https://github.com/WenjieShu/LoopViT.git
    cd LoopViT
    ```
 
-2. Install dependencies:
+2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
@@ -47,19 +47,41 @@ Conventional Vision Transformers (ViTs) follow a **feed-forward paradigm**, wher
 ## 📖 Usage
 
 ### Data Preparation
-The model expects the ARC-AGI dataset. By default, place it in `raw_data/ARC-AGI`.
-
-### Training
-To train the base LoopViT model:
-```bash
-python offline_train_loop_ARC.py --architecture loop_vit --batch-size 32 --max-loop-steps 8
+The model expects the ARC-AGI dataset. By default, place the data in `raw_data/ARC-AGI`.
+The directory structure should be:
 ```
+raw_data/
+  ARC-AGI/
+    data/
+      training/
+      evaluation/
+      test/
+```
+
+### Training (Offline)
+We provide a shell script to replicate our main experimental setup:
+```bash
+# Trains a 6-layer loop-core model (recurring 6 times)
+bash script/offline_train_loop_VARC_ViT.sh
+```
+This script acts as a wrapper around `offline_train_loop_ARC.py` with the recommended hyperparameters.
 
 ### Test-Time Training (TTT)
-To enable test-time training for enhanced reasoning on specific tasks:
+To reproduce the TTT results on ARC-1:
 ```bash
-python test_time_train_ARC.py --resume-checkpoint <path_to_checkpoint>
+# Runs TTT on ARC-1 evaluation tasks
+bash script/test_time_training_VARC_LoopViT_ARC1.sh
 ```
+This will iterate over tasks defined in `script/arc1_task_list.sh`.
+
+#### Early Exit TTT (Dynamic Compute)
+To run TTT with dynamic early exit and visualize the loop steps:
+```bash
+bash script/test_time_training_VARC_LoopViT_ARC1_early_exit.sh
+```
+This script enables `--exit-on-entropy-stable` and saves visualizations of attention maps and reasoning steps.
+
+See `script/` for more examples of training and TTT scripts.
 
 ---
 
@@ -68,15 +90,24 @@ python test_time_train_ARC.py --resume-checkpoint <path_to_checkpoint>
 ```text
 LoopViT/
 ├── src/                        # Core model definitions
-│   ├── ARC_LoopViT.py          # Recursive LoopViT architecture
-│   ├── ARC_ViT.py              # Baseline ViT modules
-│   └── ARC_loader.py           # ARC dataset loader & augmentations
+│   ├── ARC_LoopViT_v1.py       # LoopViT model architecture (v1)
+│   ├── ARC_loader.py           # ARC dataset loader & augmentations
+│   ├── ARC_ViT.py              # Base ViT components
+│   └── attn_hook.py            # Attention hooking for visualization
 ├── utils/                      # Utilities
 │   ├── eval_utils.py           # Evaluation logic
-│   └── preprocess.py           # Grid preprocessing
-├── offline_train_loop_ARC.py   # Training script
+│   ├── eval_utils_ttt.py       # TTT evaluation logic
+│   └── vis_renderer.py         # Visualization renderer
+├── script/                     # Shell scripts for training/eval
+├── offline_train_loop_ARC.py   # Main offline training script
 └── test_time_train_ARC.py      # Test-time training interface
 ```
+
+## Acknowledgements
+This codebase builds upon the [VARC](https://github.com/kyegomez/VARC) repository. We thank the authors for their open-source contribution which facilitated our research.
+
+---
+
 
 ---
 

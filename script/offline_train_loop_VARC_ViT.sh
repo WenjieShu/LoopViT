@@ -1,0 +1,32 @@
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+torchrun --nproc_per_node=8 offline_train_loop_ARC.py \
+  --architecture loop_vit \
+  --epochs 100 \
+  --loop-core-depth 6 \
+  --max-loop-steps 6 \
+  --min-loop-steps 6 \
+  --batch-size 32 \
+  --image-size 64 \
+  --patch-size 2 \
+  --learning-rate 3e-4 \
+  --weight-decay 0 \
+  --embed-dim 512 \
+  --num-heads 8 \
+  --include-rearc \
+  --num-colors 12 \
+  --data-root "raw_data/ARC-AGI" \
+  --train-split "training" \
+  --wandb-project "LoopViT" \
+  --wandb-run-name "loop_vit_base" \
+  --save-path "checkpoints/loop_vit_base.pt" \
+  --best-save-path "checkpoints/loop_vit_best.pt" \
+  --lr-scheduler "cosine" \
+  --vis-every 50 \
+  --distributed \
+  --use-wandb \
+  --gate-entropy-weight 5e-4 \
+  --loop-penalty-weight 1e-3 \
+  --max-grad-norm 1 \
+  --train-dynamic-exit \
+  --eval-dynamic-exit \
+  --no-compile
